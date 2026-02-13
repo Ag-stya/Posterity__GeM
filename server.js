@@ -78,8 +78,14 @@ app.post("/api/search", async (req, res) => {
 
 
 app.get("/api/download/all.csv", async (req, res) => {
-  const tenders = readTendersCache();
+    const tenders = readTendersCache().map(t => ({
+        ...t,
+        url:t.listingUrl || t.docUrl || t.url || ""
+    }));
+
   const p = path.join(__dirname, "exports", "all.csv");
+  fs.mkdirSync(path.join(__dirname, "exports"), { recursive: true });
+
 
   const { createObjectCsvWriter } = require("csv-writer");
   const csvWriter = createObjectCsvWriter({
