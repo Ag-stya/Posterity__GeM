@@ -35,10 +35,13 @@ app.post("/api/fetch", async (req, res) => {
   const keyword = String(req.body.keyword || "").trim();
 
   // Always fetch fresh for this endpoint (user explicitly asked)
-  console.log(`Fetching tenders from GeM (keyword="${keyword}",(pages=${pages})...`);
+  console.log(`Fetching tenders from GeM (keyword="${keyword}",pages=${pages})...`);
   await scrapeGemListings({maxPages:pages,keyword});
 
-  const tenders = readTendersCache();
+  const tenders = readTendersCache().map(t => ({
+    ...t,
+    url:t.listingUrl || t.docUrl || t.url || ""
+  }));
 
   res.json({
     pages,
@@ -57,8 +60,10 @@ app.post("/api/search", async (req, res) => {
     return res.status(400).json({ error: "Include keywords are required." });
   }
 
-  // Search should be instant: filter from cache only
-  const tenders = readTendersCache();
+  const tenders = readTendersCache().map(t => ({
+    ...t,
+    url:t.listingUrl || t.docUrl || t.url || ""
+  }));
 
   const matches = matchTenders(tenders, { include, exclude, mode });
   const csvPath = await writeMatchesCsv(matches);
@@ -109,6 +114,7 @@ app.get(/.*/, (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-app.listen(PORT, () => {
-  console.log(`Tender Agent running on http://localhost:${PORT}`);
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Server running on port ${PORT}`);
 });
