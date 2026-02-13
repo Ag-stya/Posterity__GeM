@@ -1,6 +1,5 @@
 const express = require("express");
 const { scrapeGemListings } = require("./scraper");
-
 const path = require("path");
 const fs = require("fs");
 
@@ -10,15 +9,33 @@ const { writeMatchesCsv } = require("./exporter");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// --- middleware ---
+// ---------- ensure runtime dirs/files exist (CRITICAL for Render) ----------
+const DATA_DIR = path.join(__dirname, "data");
+const EXPORTS_DIR = path.join(__dirname, "exports");
+const TENDERS_FILE = path.join(DATA_DIR, "tenders.json");
+
+fs.mkdirSync(DATA_DIR, { recursive: true });
+fs.mkdirSync(EXPORTS_DIR, { recursive: true });
+
+if (!fs.existsSync(TENDERS_FILE)) {
+  fs.writeFileSync(TENDERS_FILE, "[]");
+}
+
+// ---------- middleware ----------
 app.use(express.json({ limit: "1mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
-// --- helpers ---
+// ---------- helpers ----------
+function normalizeTenderUrl(t) {
+  return {
+    ...t,
+    url: t.listingUrl || t.docUrl || t.url || "",
+  };
+}
+
 function readTendersCache() {
-  const p = path.join(__dirname, "data", "tenders.json");
   try {
-    const raw = fs.readFileSync(p, "utf-8");
+    const raw = fs.readFileSync(TENDERS_FILE, "utf-8");
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
   } catch (e) {
@@ -26,22 +43,30 @@ function readTendersCache() {
   }
 }
 
-// --- routes ---
+// ---------- routes ----------
 app.get("/api/health", (req, res) => {
   res.json({ ok: true });
 });
+
 app.post("/api/fetch", async (req, res) => {
   const pages = Math.max(1, Math.min(Number(req.body.pages || 5), 50));
   const keyword = String(req.body.keyword || "").trim();
 
-  // Always fetch fresh for this endpoint (user explicitly asked)
-  console.log(`Fetching tenders from GeM (keyword="${keyword}",pages=${pages})...`);
-  await scrapeGemListings({maxPages:pages,keyword});
+  console.log(
+    `Fetching tenders from GeM (keyword="${keyword}", pages=${pages})...`
+  );
 
-  const tenders = readTendersCache().map(t => ({
-    ...t,
-    url:t.listingUrl || t.docUrl || t.url || ""
-  }));
+  try {
+    await scrapeGemListings({ maxPages: pages, keyword });
+  } catch (err) {
+    console.error("Fetch failed:", err?.message || err);
+    return res.status(500).json({
+      error: "Scrape failed. GeM may be slow/blocked or Playwright failed.",
+      detail: String(err?.message || err),
+    });
+  }
+
+  const tenders = readTendersCache().map(normalizeTenderUrl);
 
   res.json({
     pages,
@@ -60,10 +85,7 @@ app.post("/api/search", async (req, res) => {
     return res.status(400).json({ error: "Include keywords are required." });
   }
 
-  const tenders = readTendersCache().map(t => ({
-    ...t,
-    url:t.listingUrl || t.docUrl || t.url || ""
-  }));
+  const tenders = readTendersCache().map(normalizeTenderUrl);
 
   const matches = matchTenders(tenders, { include, exclude, mode });
   const csvPath = await writeMatchesCsv(matches);
@@ -76,16 +98,9 @@ app.post("/api/search", async (req, res) => {
   });
 });
 
-
 app.get("/api/download/all.csv", async (req, res) => {
-    const tenders = readTendersCache().map(t => ({
-        ...t,
-        url:t.listingUrl || t.docUrl || t.url || ""
-    }));
-
-  const p = path.join(__dirname, "exports", "all.csv");
-  fs.mkdirSync(path.join(__dirname, "exports"), { recursive: true });
-
+  const tenders = readTendersCache().map(normalizeTenderUrl);
+  const p = path.join(EXPORTS_DIR, "all.csv");
 
   const { createObjectCsvWriter } = require("csv-writer");
   const csvWriter = createObjectCsvWriter({
@@ -98,7 +113,7 @@ app.get("/api/download/all.csv", async (req, res) => {
       { id: "buyer", title: "Buyer" },
       { id: "startDate", title: "Start Date" },
       { id: "endDate", title: "End Date" },
-      { id: "url", title: "Link" }
+      { id: "url", title: "Link" },
     ],
   });
 
@@ -106,9 +121,8 @@ app.get("/api/download/all.csv", async (req, res) => {
   res.download(p, "all.csv");
 });
 
-
 app.get("/api/download/matches.csv", (req, res) => {
-  const p = path.join(__dirname, "exports", "matches.csv");
+  const p = path.join(EXPORTS_DIR, "matches.csv");
   if (!fs.existsSync(p)) {
     return res.status(404).send("No CSV generated yet. Run a search first.");
   }
@@ -119,7 +133,6 @@ app.get("/api/download/matches.csv", (req, res) => {
 app.get(/.*/, (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
-
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running on port ${PORT}`);
