@@ -1,0 +1,321 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Tender Agent (GeM)</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Arial; margin: 20px; max-width: 1200px; background:#0f0f10; color:#f2f2f2; }
+      .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; }
+      .card { border: 1px solid #2a2a2a; border-radius: 12px; padding: 14px; background:#161617; }
+      label { font-size: 13px; color: #cfcfcf; display: block; margin-bottom: 6px; }
+      input, select {
+        padding: 10px;
+        border: 1px solid #333;
+        border-radius: 10px;
+        min-width: 260px;
+        background:#101011;
+        color:#f2f2f2;
+        outline:none;
+      }
+      button { padding: 10px 14px; border: 0; border-radius: 10px; cursor: pointer; font-weight:600; }
+      button.primary { background: #ffffff; color: #111; }
+      button.secondary { background: #2a2a2a; color: #f2f2f2; }
+      button:disabled { opacity: 0.45; cursor: not-allowed; }
+      table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+      th, td { border-bottom: 1px solid #262626; padding: 10px; font-size: 13px; vertical-align: top; }
+      th { text-align: left; background: #131314; position: sticky; top: 0; z-index: 1; }
+      .muted { color: #a5a5a5; font-size: 13px; }
+      .pill { display: inline-block; padding: 3px 8px; border-radius: 999px; background: #242424; font-size: 12px; margin-right: 6px; }
+      a { color: #25c06d; text-decoration: none; font-weight:600; }
+      a:hover { text-decoration: underline; }
+      .topbar { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+      .error { color: #ff6b6b; }
+      .ok { color: #25c06d; }
+      .spacer { height: 10px; }
+      .small { font-size: 12px; color:#a5a5a5; }
+      .divider { height:1px; background:#262626; margin: 12px 0; }
+      .linkRow { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    </style>
+  </head>
+
+  <body>
+    <div class="topbar">
+      <h2 style="margin:0">Tender Agent (GeM)</h2>
+      <div class="muted">Fetch → Filter → Download • Keyword-first • Local</div>
+    </div>
+
+    <!-- Controls -->
+    <div class="card" style="margin-top:14px">
+
+      <!-- Keyword inputs -->
+      <div class="row">
+        <div>
+          <label>Include keywords (comma separated)</label>
+          <input id="include" placeholder="jepc, transport, logistics" />
+          <div class="small">Fetch uses the <b>first include keyword</b> (ex: "jepc") to pull only relevant tenders from GeM.</div>
+        </div>
+
+        <div>
+          <label>Exclude keywords (comma separated)</label>
+          <input id="exclude" placeholder="printer, toner" />
+        </div>
+
+        <div>
+          <label>Match mode</label>
+          <select id="mode">
+            <option value="ANY">ANY (match at least one)</option>
+            <option value="ALL">ALL (match every include keyword)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
+      <!-- Fetch controls -->
+      <div class="row">
+        <div>
+          <label>Pages to fetch</label>
+          <select id="pages">
+            <option value="1">1 page</option>
+            <option value="2">2 pages</option>
+            <option value="5">5 pages</option>
+            <option value="10" selected>10 pages</option>
+            <option value="20">20 pages</option>
+            <option value="50">50 pages (max)</option>
+          </select>
+          <div class="small">More pages = more tenders (slower)</div>
+        </div>
+
+        <button class="primary" id="fetchBtn">Fetch (by keyword)</button>
+        <button class="secondary" id="downloadAllBtn" disabled>Download All CSV</button>
+        <button class="primary" id="filterBtn" disabled>Filter (local)</button>
+        <button class="secondary" id="downloadFilteredBtn" disabled>Download Filtered CSV</button>
+
+        <div class="muted" id="status" style="align-self:center; min-width: 320px;"></div>
+      </div>
+
+      <div class="spacer"></div>
+      <div class="muted" id="summary">Nothing fetched yet.</div>
+    </div>
+
+    <!-- Results -->
+    <div class="card" style="margin-top:14px">
+      <div style="overflow:auto; max-height: 70vh;">
+        <table id="table" style="display:none">
+          <thead>
+            <tr>
+              <th>Bid No</th>
+              <th>RA No</th>
+              <th>Title</th>
+              <th>Dept / Buyer</th>
+              <th>Dates</th>
+              <th>Matched</th>
+              <th>Link</th>
+            </tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+      <div class="muted" id="empty" style="display:block; padding-top:10px;">
+        No results yet.
+      </div>
+    </div>
+
+    <script>
+      const includeEl = document.getElementById("include");
+      const excludeEl = document.getElementById("exclude");
+      const modeEl = document.getElementById("mode");
+      const pagesEl = document.getElementById("pages");
+
+      const statusEl = document.getElementById("status");
+      const summaryEl = document.getElementById("summary");
+
+      const tableEl = document.getElementById("table");
+      const tbodyEl = document.getElementById("tbody");
+      const emptyEl = document.getElementById("empty");
+
+      const fetchBtn = document.getElementById("fetchBtn");
+      const filterBtn = document.getElementById("filterBtn");
+      const downloadAllBtn = document.getElementById("downloadAllBtn");
+      const downloadFilteredBtn = document.getElementById("downloadFilteredBtn");
+
+      function setStatus(msg, type = "muted") {
+        statusEl.textContent = msg || "";
+        statusEl.className = type === "error" ? "muted error" : (type === "ok" ? "muted ok" : "muted");
+      }
+
+      function escapeHtml(s) {
+        return String(s ?? "")
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#039;");
+      }
+
+      function clearTable() {
+        tbodyEl.innerHTML = "";
+        tableEl.style.display = "none";
+        emptyEl.style.display = "block";
+      }
+
+      // Fetch uses FIRST include keyword (before comma) to avoid unnecessary scraping
+      function getFetchKeyword() {
+        const raw = includeEl.value.trim();
+        if (!raw) return "";
+        // first token before comma
+        return raw.split(",")[0].trim();
+      }
+
+      function renderRows(rows, mode) {
+        tbodyEl.innerHTML = "";
+        if (!rows || rows.length === 0) {
+          clearTable();
+          return;
+        }
+
+        emptyEl.style.display = "none";
+        tableEl.style.display = "";
+
+        for (const r of rows) {
+          const deptBuyer = (r.department || "") + (r.buyer ? " • " + r.buyer : "");
+          const dates = (r.startDate || "") + " → " + (r.endDate || "");
+
+          const matched = (r.matchedKeywords || [])
+            .map(k => `<span class="pill">${escapeHtml(k)}</span>`)
+            .join("");
+
+          // ✅ IMPORTANT: prefer listingUrl to OPEN (won't force PDF download)
+          const listingHref = r.listingUrl || r.url || "";
+          const docHref = r.docUrl || "";
+
+          let linkHtml = "";
+          if (listingHref || docHref) {
+            const parts = [];
+            if (listingHref) {
+              parts.push(`<a href="${escapeHtml(listingHref)}" target="_blank" rel="noreferrer">Open</a>`);
+            }
+            if (docHref) {
+              parts.push(`<a href="${escapeHtml(docHref)}" target="_blank" rel="noreferrer">PDF</a>`);
+            }
+            linkHtml = `<div class="linkRow">${parts.join("")}</div>`;
+          }
+
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td>${escapeHtml(r.bidNo || "")}</td>
+            <td>${escapeHtml(r.raNo || "")}</td>
+            <td>${escapeHtml(r.title || "")}</td>
+            <td>${escapeHtml(deptBuyer)}</td>
+            <td>${escapeHtml(dates)}</td>
+            <td>${mode === "FILTER" ? matched : "—"}</td>
+            <td>${linkHtml}</td>
+          `;
+          tbodyEl.appendChild(tr);
+        }
+      }
+
+      async function onFetch() {
+        const pages = Number(pagesEl.value || "10");
+        const keyword = getFetchKeyword();
+
+        if (!keyword) {
+          setStatus('Type an include keyword first (ex: "jepc"). Fetch uses the first include keyword.', "error");
+          return;
+        }
+
+        setStatus(`Fetching ${pages} pages for keyword "${keyword}"…`);
+        fetchBtn.disabled = true;
+        filterBtn.disabled = true;
+        downloadAllBtn.disabled = true;
+        downloadFilteredBtn.disabled = true;
+
+        try {
+          const res = await fetch("/api/fetch", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pages, keyword }),
+          });
+
+          const json = await res.json();
+          if (!res.ok) {
+            setStatus(json.error || "Fetch failed.", "error");
+            return;
+          }
+
+          const total = json.totalTendersInCache || 0;
+
+          summaryEl.textContent = `Fetched: ${total} tenders (keyword: "${json.keyword || keyword}", pages: ${json.pages})`;
+          renderRows(json.tenders || [], "ALL");
+
+          filterBtn.disabled = false;             // local filter after fetch
+          downloadAllBtn.disabled = total === 0;  // download everything fetched
+
+          setStatus("Done. You can now Filter (local) or Download All.", "ok");
+        } catch (e) {
+          setStatus("Network/server error during fetch. Is the server running?", "error");
+        } finally {
+          fetchBtn.disabled = false;
+        }
+      }
+
+      async function onFilter() {
+        const include = includeEl.value.trim();
+        const exclude = excludeEl.value.trim();
+        const mode = modeEl.value;
+
+        if (!include) {
+          setStatus("Include keywords are required.", "error");
+          return;
+        }
+
+        setStatus("Filtering local cache…");
+        filterBtn.disabled = true;
+        downloadFilteredBtn.disabled = true;
+
+        try {
+          const res = await fetch("/api/search", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ include, exclude, mode }),
+          });
+
+          const json = await res.json();
+          if (!res.ok) {
+            setStatus(json.error || "Filter failed.", "error");
+            return;
+          }
+
+          summaryEl.textContent =
+            `Cache: ${json.totalTendersInCache} tenders • Matches: ${json.matchCount}`;
+
+          renderRows(json.matches || [], "FILTER");
+          downloadFilteredBtn.disabled = (json.matchCount || 0) === 0;
+
+          setStatus("Done.", "ok");
+        } catch (e) {
+          setStatus("Network/server error during filter. Is the server running?", "error");
+        } finally {
+          filterBtn.disabled = false;
+        }
+      }
+
+      fetchBtn.addEventListener("click", onFetch);
+      filterBtn.addEventListener("click", onFilter);
+
+      downloadAllBtn.addEventListener("click", () => {
+        window.location.href = "/api/download/all.csv";
+      });
+
+      downloadFilteredBtn.addEventListener("click", () => {
+        window.location.href = "/api/download/matches.csv";
+      });
+
+      // Initial state
+      clearTable();
+      setStatus("Ready.");
+    </script>
+  </body>
+</html>
+

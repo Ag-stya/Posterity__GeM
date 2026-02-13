@@ -1,0 +1,6 @@
+node_modules
+data/tenders.json
+exports
+.env
+.DS_Store
+playwright-report
